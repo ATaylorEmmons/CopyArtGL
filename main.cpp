@@ -1,5 +1,5 @@
 #include <iostream>
-#include <array>
+#include <vector>
 #include <algorithm>
 
 #include "GLAD/glad.c"
@@ -13,27 +13,10 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "STBI/stb_image_write.h"
 
-#include "Utils.h"
-
 #include "Debug.h"
+#include "Utils.h"
 #include "Shader.h"
-#include "Render.h"
-
-
-struct MemoryReference {
-  float* memory;
-  uint32_t start;
-  uint32_t stop;
-};
-
-struct Specimen {
-      double score;
-      MemoryReference traitMemory;
-
-      bool operator<(const Specimen &specimen) {
-          return score < specimen.score;
-      }
-};
+#include "CopyArt.h"
 
 GLFWwindow* initGL(uint32_t width, uint32_t height) {
     if( !glfwInit() )
@@ -42,10 +25,10 @@ GLFWwindow* initGL(uint32_t width, uint32_t height) {
         return nullptr;
     }
 
-    GLFWwindow* window = glfwCreateWindow(width, height, "LearnOpenGL", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(width, height, "Copy Art", NULL, NULL);
     if (window == NULL)
     {
-        std::cout << "Failed to create GLFW window" << std::endl;
+        printf("Failed to create GLFW window\n");
         glfwTerminate();
         return nullptr;
     }
@@ -53,7 +36,7 @@ GLFWwindow* initGL(uint32_t width, uint32_t height) {
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
-        std::cout << "Failed to initialize GLAD" << std::endl;
+        printf("Failed to initialize GLAD\n");
         glfwTerminate();
         return nullptr;
     }
@@ -61,155 +44,169 @@ GLFWwindow* initGL(uint32_t width, uint32_t height) {
     return window;
 }
 
+void debug_PrintMem(float* memory, uint32_t size) {
+
+    for(uint32_t i = 0; i < size; i += 6) {
+        printf("{%f, %f}, { %f, %f, %f, %f} \n", memory[i], memory[i + 1], memory[i + 2], memory[i + 3], memory[i + 4], memory[i + 5] );
+    }
+
+    printf("\n\n\n");
+}
 
 int main() {
 
-    uint32_t width = 1920;
-    uint32_t height = 1080;
+    uint32_t width = 180;
+    uint32_t height = 180;
 
-    std::string targetPath = "lighthouse.png";
+    std::string targetPath = "Sunset.png";
     std::string finalImagePath = "out.png";
     std::string frameDirectory = "Frames/";
 
-    const uint32_t generationSize = 1;
-    const uint32_t populationSize = 1;
-    uint32_t triangleCount = 20;
+    uint32_t generationCount = 100;
+    uint32_t populationCount = 50;
+    uint32_t triangleCount = 100;
+
+    uint32_t eliteCount = 0;
+    float selectionCutoff = .25f;
+
+/* INITILIZATION */
 
     RNG rng(Timer::now());
+    Image target(targetPath);
+    Image canvas(width, height);
 
-/* Copy Art Declarations*/
+    std::vector<Specimen> frontPopulation;
+    std::vector<Specimen> backPopulation;
+    frontPopulation.reserve(populationCount);
+    backPopulation.reserve(populationCount);
 
-    //3*(2 positions + 4 colors)
-    uint32_t vertexSize = 18;
-    uint32_t traitMemorySize = populationSize*triangleCount*vertexSize*sizeof(float);
-    float* traitMemory;
-    std::array<Specimen, populationSize> frontPopulation;
-    std::array<Specimen, populationSize> backPopulation;
+    std::vector<Specimen>* currentPopulation;
+    std::vector<Specimen>* previousPopulation;
+    std::vector<Specimen>* tempPopPtr;
 
-    std::array<Specimen, populationSize>* currentPopulation;
-    std::array<Specimen, populationSize>* previousPopulation;
-    std::array<Specimen, populationSize>* tempPopulation;
+    uint32_t floatsPerVertex = 6;
+    uint32_t floatPerSpecimen = 3*floatsPerVertex*triangleCount;
+    uint32_t drawDataMemSize = populationCount*floatPerSpecimen*sizeof(float);
 
+    float* frontLocalBuffer = (float*)malloc(drawDataMemSize);
+    float* backLocalBuffer = (float*)malloc(drawDataMemSize);
 
-/* Open GL Decalarations*/
-    //Must be called before any OpenGl code
+    float** currentBuffer;
+    float** previousBuffer;
+    float** tempBuffer;
+
     GLFWwindow* window = initGL(width, height);
-    Texture target(width, height, targetPath);
-    Texture canvas(width, height);
 
-    GLuint shaderProgram = buildAndLinkShaders(vert_Triangle, frag_Triangle);
-    GLuint fitnessComputeProgram = buildAndLinkComputeShader(compute_Fitness);
+    GLuint renderProgram = buildAndLinkShaders(vert_Triangle, frag_Triangle);
+    glUseProgram(renderProgram);
 
+    glClearColor(.5f, .5f, .5f, 1.0f);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    GLuint VAO;
-    glGenVertexArrays(1, &VAO);
-    glBindVertexArray(VAO);
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
 
-    GLuint triangleBuffer;
-    glGenBuffers(1, &triangleBuffer);
-    glBindBuffer(GL_ARRAY_BUFFER, triangleBuffer);
-
-    int vertexCount = triangleCount*3;
-    int sizePerVertex = 6; //2 position, 4 color;
-
-    float* vertices = (float*)malloc(vertexCount*sizePerVertex*sizeof(float));
-
-    for(int i = 0; i < vertexCount*sizePerVertex; i+= sizePerVertex) {
-        //Positions
-        vertices[i] = rng.runifFloat(-1.0f, 1.0f);
-        vertices[i + 1] = rng.runifFloat(-1.0f, 1.0f);
-
-        //Colors
-        vertices[i + 2] = rng.runifFloat(0.0f, 1.0f);
-        vertices[i + 3] = rng.runifFloat(0.0f, 1.0f);
-        vertices[i + 4] = rng.runifFloat(0.0f, 1.0f);
-        vertices[i + 5] = rng.runifFloat(0.0f, 1.0f);
-    }
-
-    glBufferData(GL_ARRAY_BUFFER, vertexCount*sizePerVertex*sizeof(float), vertices, GL_STREAM_DRAW);
-
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(2*sizeof(float)));
+    GLuint deviceBuffer;
+    glGenBuffers(1, &deviceBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, deviceBuffer);
+    glBufferData(GL_ARRAY_BUFFER, drawDataMemSize, NULL, GL_DYNAMIC_READ);
 
     glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, floatsPerVertex*sizeof(float), (void*)0);
+
     glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, floatsPerVertex*sizeof(float), (void*)(2*sizeof(float)));
 
 
+/* Initilize Population */
 
-/* RENDER OFF SCREEN */
+    for(uint32_t i = 0; i < populationCount; i++) {
+        MemoryRange memRange;
+        memRange.offset = i*floatPerSpecimen;
+        memRange.length = floatPerSpecimen;
 
-    Texture texture(width, height);
-    texture.bind(1);
+        frontPopulation.push_back(Specimen(rng, memRange, frontLocalBuffer));
+        backPopulation.push_back(frontPopulation.at(i));
 
-    GLuint framebuffer = 0;
-    glGenFramebuffers(1, &framebuffer);
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-
-    glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texture.handle, 0);
-    GLenum DrawBuffers[1] = {GL_COLOR_ATTACHMENT0};
-    glDrawBuffers(1, DrawBuffers);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
-    glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-
-/* Shader Storage */
-
-    glUseProgram(fitnessComputeProgram);
-    GLuint shaderOutputBuffer = 0;
-    glGenBuffers(1, &shaderOutputBuffer);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, shaderOutputBuffer);
-
-
-    glBufferData(GL_SHADER_STORAGE_BUFFER, 1920*1080*sizeof(float), NULL,  GL_DYNAMIC_DRAW);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, shaderOutputBuffer);
-    //glShaderStorageBlockBinding(fitnessComputeProgram, 2, 0);
-
-
-    glDispatchCompute(1920, 1080, 1);
-    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-
-    float val[1920*1080];
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, 1920*1080*sizeof(float), &val);
-
-    double score = 0;
-    for(int i = 0; i < 1920*1080; i++) {
-      score += val[i];
+        memcpy(backLocalBuffer, frontLocalBuffer, drawDataMemSize);
     }
-    printf("%f\n", score);
+
+    currentPopulation = &frontPopulation;
+    currentBuffer = &frontLocalBuffer;
+
+    previousPopulation = &backPopulation;
+    previousBuffer = &frontLocalBuffer;//&backLocalBuffer;
+
+/* Begin Simulation */
+    for(uint32_t curGen = 0; curGen < generationCount; curGen++) {
+
+        //Upload generation traits
+        glBufferSubData(GL_ARRAY_BUFFER, 0, drawDataMemSize, (*currentBuffer));
+
+        /* Draw the traits */
+        for(uint32_t curSpec = 0; curSpec < populationCount; curSpec++) {
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawArrays(GL_TRIANGLES, currentPopulation->at(curSpec).memoryRange.offset/floatsPerVertex, 3*triangleCount);
+
+            readFramebuffer(canvas);
+            currentPopulation->at(curSpec).score = fitness(canvas, target);
+        }
+
+        std::sort(currentPopulation->begin(), currentPopulation->end());
 
 
-    glUseProgram(shaderProgram);
+        printf("%d, %f\n", curGen, currentPopulation->at(0).score);
+
+        /* Swap Population Pointers to build current population */
+        tempPopPtr = currentPopulation;
+        tempBuffer = currentBuffer;
+
+        currentPopulation = previousPopulation;
+        currentBuffer = previousBuffer;
+
+        previousPopulation = tempPopPtr;
+        previousBuffer = tempBuffer;
+
+        for(uint32_t curElite = 0; curElite < eliteCount; curElite++) {
+            currentPopulation->at(curElite) = previousPopulation->at(curElite);
+        }
+
+        /* Selection + Crossover */
+        for(uint32_t curSpec = eliteCount; curSpec < populationCount; curSpec++) {
+
+            uint32_t indexA = rng.runifInt(0, populationCount*selectionCutoff - 1);
+            uint32_t indexB = rng.runifInt(0, populationCount*selectionCutoff - 1);
+
+            while(indexA == indexB) {
+                indexB = rng.runifInt(0, populationCount*selectionCutoff - 1);
+            }
+
+            Specimen& specA = previousPopulation->at(indexA);
+            Specimen& specB = previousPopulation->at(indexB);
+            Specimen& inherit = currentPopulation->at(curSpec);
+
+            currentPopulation->at(curSpec) = Specimen(specA, specB, inherit, rng, (*currentBuffer));
 
 
-
-    while(!glfwWindowShouldClose(window))
-    {
+        }
 
 
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
-        glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-
-
-        glDrawArrays(GL_TRIANGLES, 0, vertexCount);
-
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glReadBuffer(GL_COLOR_ATTACHMENT0);
-        glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-
-
-        glfwSwapBuffers(window);
         glfwPollEvents();
-
+        glfwSwapBuffers(window);
     }
 
+    printf("Completed Simulation.\n");
+
+    while(!glfwWindowShouldClose(window)) {
+
+        glfwPollEvents();
+        glfwSwapBuffers(window);
+    }
 
     glfwTerminate();
-
+    free(frontLocalBuffer);
+    free(backLocalBuffer);
     return 0;
 }
