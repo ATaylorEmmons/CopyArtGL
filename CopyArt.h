@@ -5,19 +5,22 @@ struct Image {
    int width;
    int height;
 
-   GLuint texture;
    GLenum format;
    void* pixels;
 
    Image(uint32_t lwidth, uint32_t lheight) {
       width = lwidth;
       height = lheight;
+
       stbi_set_flip_vertically_on_load(true);
       pixels = (float*)malloc(width*height*channels*sizeof(float));
    }
 
    Image(std::string path) {
        int channels;
+
+       stbi_set_flip_vertically_on_load(true);
+
        pixels = (void*)stbi_loadf(path.c_str(), &width, &height, &channels, 3);
 
        if(!pixels) {
@@ -25,11 +28,13 @@ struct Image {
        }
    }
 
+
    void save(std::string path) {
         if(format != GL_UNSIGNED_BYTE) {
             throw std::invalid_argument("Image format must be in GL_UNSIGNED_BYTE");
         }
           int stride_in_bytes = width*channels*sizeof(uint8_t);
+          stbi_flip_vertically_on_write(true);
           stbi_write_png(path.c_str(), width, height, channels, (uint8_t*)pixels, stride_in_bytes);
     }
 
@@ -40,6 +45,45 @@ struct Image {
       }
    }
 
+};
+
+struct Texture {
+    GLuint handle;
+    uint32_t width;
+    uint32_t height;
+    uint32_t unit;
+
+    Texture(uint32_t lwidth, uint32_t lheight, uint32_t unit) {
+        width = lwidth;
+        height = lheight;
+
+        glGenTextures(1, &handle);
+        glActiveTexture(GL_TEXTURE0 + unit);
+        glBindTexture(GL_TEXTURE_2D, handle);
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, NULL);
+
+    }
+
+    Texture(Image& img, uint32_t unit) {
+        width = img.width;
+        height = img.height;
+        glGenTextures(1, &handle);
+        glActiveTexture(GL_TEXTURE0 + unit);
+
+        glBindTexture(GL_TEXTURE_2D, handle);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, img.pixels);
+    }
 };
 
 void readFramebuffer(Image& img) {
@@ -69,18 +113,44 @@ struct Specimen {
       Specimen(RNG& rng, MemoryRange memRange, float* memory) {
           memoryRange = memRange;
 
-          for(uint32_t i = memoryRange.offset; i < memoryRange.offset + memoryRange.length; i += 6) {
-              memory[i] = rng.runifFloat(-1.0, 1.0);
-              memory[i + 1] = rng.runifFloat(-1, 1);
 
-              memory[i + 2] = rng.runifFloat(0, 1);
-              memory[i + 3] = rng.runifFloat(0, 1);
-              memory[i + 4] = rng.runifFloat(0, 1);
-              memory[i + 5] = rng.runifFloat(0, 1);
+          float shiftX = 0;
+          float shiftY = 0;
+
+          float r;
+          float g;
+          float b;
+          float a;
+
+          uint32_t count = 0;
+          for(uint32_t i = memoryRange.offset; i < memoryRange.offset + memoryRange.length; i += 6) {
+
+              if(count % 3 == 0) {
+                  shiftX = rng.runifFloat(-1.0, .95);
+                  shiftY = rng.runifFloat(-1.0, .95);
+              }
+
+              r = rng.runifFloat(0, 1.0);
+              g = rng.runifFloat(0, 1.0);
+              b = rng.runifFloat(0, 1.0);
+              a = rng.runifFloat(0, .05);
+
+
+              memory[i] = rng.rnormFloat(0, .05) + shiftX;
+              memory[i + 1] = rng.rnormFloat(0, .05) + shiftY;
+
+
+              memory[i + 2] = r;
+              memory[i + 3] = g;
+              memory[i + 4] = b;
+              memory[i + 5] = a;
+
+              count++;
           }
+
       }
 
-      Specimen(Specimen& parentA, Specimen& parentB, Specimen& inheritor, RNG& rng, float* memory) {
+      Specimen(Specimen& parentA, Specimen& parentB, Specimen& inheritor, RNG& rng, float mutationRate, float* memory) {
           memoryRange = inheritor.memoryRange;
           score = 0;
 
@@ -88,12 +158,51 @@ struct Specimen {
           uint32_t offsetB = parentB.memoryRange.offset;
           uint32_t inheritOffset = memoryRange.offset;
 
+          float x;
+          float y;
+
+          float r;
+          float g;
+          float b;
+          float a;
 
 
           int n;
-          for(uint32_t i = 0; i < memoryRange.length; i++) {
-                n = rng.rbinary();
-                memory[inheritOffset + i] = n*memory[offsetA + i] + (1 - n)*memory[offsetB + i] + rng.rnormFloat(0, .001);
+          int posN;
+          uint32_t count = 0;
+          for(uint32_t vertex = 0; vertex < memoryRange.length; vertex += 6) {
+
+              if(vertex % 3 == 0) {
+                  posN = rng.rbinary();
+              }
+
+              int i = vertex;
+              x = posN*memory[offsetA + i] + (1 - posN)*memory[offsetB + i] + rng.rnormFloat(0, mutationRate);
+              y = posN*memory[offsetA + i + 1] + (1 - posN)*memory[offsetB + i + 1] + rng.rnormFloat(0, mutationRate);
+
+              n = rng.rbinary();
+              r = n*memory[offsetA + i + 2] + (1 - n)*memory[offsetB + i + 2] + rng.rnormFloat(0, mutationRate);
+
+              n = rng.rbinary();
+              g = n*memory[offsetA + i + 3] + (1 - n)*memory[offsetB + i + 3] + rng.rnormFloat(0, mutationRate);
+
+              n = rng.rbinary();
+              b = n*memory[offsetA + i + 4] + (1 - n)*memory[offsetB + i + 4] + rng.rnormFloat(0, mutationRate);
+
+              n = rng.rbinary();
+              a = n*memory[offsetA + i + 5] + (1 - n)*memory[offsetB + i + 5] + rng.rnormFloat(0, mutationRate);
+
+
+
+              memory[inheritOffset + i] = x;
+              memory[inheritOffset + i + 1] = y;
+
+              memory[inheritOffset + i + 2] = r;
+              memory[inheritOffset + i + 3] = g;
+              memory[inheritOffset + i + 4] = b;
+              memory[inheritOffset + i + 5] = a;
+
+              count++;
           }
       }
 
@@ -113,8 +222,6 @@ double fitness(Image& canvas, Image& target) {
 
     return score;
 }
-
-
 
 
 

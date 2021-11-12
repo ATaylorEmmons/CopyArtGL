@@ -39,6 +39,7 @@ GLuint buildAndLinkShaders(std::string vertCode, std::string fragCode) {
   	return shader_program;
 }
 
+
 std::string vert_Triangle =
 "#version 450\n"
 "layout (location = 0) in vec2 attr_Pos;\n"
@@ -56,9 +57,6 @@ std::string frag_Triangle =
 " void main() {\n"
 "	frag_color = vertColor;\n "
 "}\n";
-
-
-
 
 
 
