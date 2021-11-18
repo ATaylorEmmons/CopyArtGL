@@ -96,6 +96,14 @@ void readFramebufferUByte(Image& img) {
     glReadPixels(0, 0, img.width, img.height, GL_RGB, GL_UNSIGNED_BYTE, img.pixels);
 }
 
+void copyFramebuffers(GLuint src, GLuint dest, uint32_t width, uint32_t height) {
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, src);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dest);
+    glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+}
+
 //All in floats
 struct MemoryRange {
    uint32_t offset;
@@ -110,34 +118,34 @@ struct Specimen {
 
       Specimen() {}
 
-      Specimen(RNG& rng, MemoryRange memRange, float* memory) {
+      Specimen(RNG& rng, MemoryRange memRange, float startAlpha, float endAlpha, float* memory) {
           memoryRange = memRange;
-
-
-          float shiftX = 0;
-          float shiftY = 0;
 
           float r;
           float g;
           float b;
           float a;
 
+          float shiftX = 0;
+          float shiftY = 0;
+
           uint32_t count = 0;
           for(uint32_t i = memoryRange.offset; i < memoryRange.offset + memoryRange.length; i += 6) {
 
-              if(count % 3 == 0) {
-                  shiftX = rng.runifFloat(-1.0, .95);
-                  shiftY = rng.runifFloat(-1.0, .95);
-              }
 
               r = rng.runifFloat(0, 1.0);
               g = rng.runifFloat(0, 1.0);
               b = rng.runifFloat(0, 1.0);
-              a = rng.runifFloat(0, .05);
 
+              a = rng.runifFloat(endAlpha, startAlpha);
 
-              memory[i] = rng.rnormFloat(0, .05) + shiftX;
-              memory[i + 1] = rng.rnormFloat(0, .05) + shiftY;
+              if(count % 3 == 0) {
+                  shiftX = rng.runifFloat(-1.001, .995);
+                  shiftY = rng.runifFloat(-1.001, .995);
+              }
+
+              memory[i] = rng.runifFloat(.001, .005) + shiftX;
+              memory[i + 1] = rng.runifFloat(.001, .005) + shiftY;
 
 
               memory[i + 2] = r;
@@ -150,12 +158,13 @@ struct Specimen {
 
       }
 
-      Specimen(Specimen& parentA, Specimen& parentB, Specimen& inheritor, RNG& rng, float mutationRate, float* memory) {
+      Specimen(Specimen& parentA, Specimen& parentB, Specimen& inheritor, RNG& rng, float mutationChance, float mutationAmount, float* memory) {
           memoryRange = inheritor.memoryRange;
           score = 0;
 
           uint32_t offsetA = parentA.memoryRange.offset;
           uint32_t offsetB = parentB.memoryRange.offset;
+
           uint32_t inheritOffset = memoryRange.offset;
 
           float x;
@@ -171,26 +180,27 @@ struct Specimen {
           int posN;
           uint32_t count = 0;
           for(uint32_t vertex = 0; vertex < memoryRange.length; vertex += 6) {
-
-              if(vertex % 3 == 0) {
-                  posN = rng.rbinary();
-              }
-
               int i = vertex;
-              x = posN*memory[offsetA + i] + (1 - posN)*memory[offsetB + i] + rng.rnormFloat(0, mutationRate);
-              y = posN*memory[offsetA + i + 1] + (1 - posN)*memory[offsetB + i + 1] + rng.rnormFloat(0, mutationRate);
+
+
+              if(count % 3 == 0)
+                  posN = rng.rbinary();
+
+              x = posN*memory[offsetA + i] + (1 - posN)*memory[offsetB + i] + mutate(rng, mutationChance, mutationAmount);
+              y = posN*memory[offsetA + i + 1] + (1 - posN)*memory[offsetB + i + 1] + mutate(rng, mutationChance, mutationAmount);
+
 
               n = rng.rbinary();
-              r = n*memory[offsetA + i + 2] + (1 - n)*memory[offsetB + i + 2] + rng.rnormFloat(0, mutationRate);
+              r = n*memory[offsetA + i + 2] + (1 - n)*memory[offsetB + i + 2] + mutate(rng, mutationChance, mutationAmount);
 
               n = rng.rbinary();
-              g = n*memory[offsetA + i + 3] + (1 - n)*memory[offsetB + i + 3] + rng.rnormFloat(0, mutationRate);
+              g = n*memory[offsetA + i + 3] + (1 - n)*memory[offsetB + i + 3] + mutate(rng, mutationChance, mutationAmount);
 
               n = rng.rbinary();
-              b = n*memory[offsetA + i + 4] + (1 - n)*memory[offsetB + i + 4] + rng.rnormFloat(0, mutationRate);
+              b = n*memory[offsetA + i + 4] + (1 - n)*memory[offsetB + i + 4] + mutate(rng, mutationChance, mutationAmount);
 
               n = rng.rbinary();
-              a = n*memory[offsetA + i + 5] + (1 - n)*memory[offsetB + i + 5] + rng.rnormFloat(0, mutationRate);
+              a = n*memory[offsetA + i + 5] + (1 - n)*memory[offsetB + i + 5] + mutate(rng, mutationChance, mutationAmount);
 
 
 
@@ -202,8 +212,35 @@ struct Specimen {
               memory[inheritOffset + i + 4] = b;
               memory[inheritOffset + i + 5] = a;
 
+
+              checkBounds(memory[inheritOffset + i]);
+              checkBounds(memory[inheritOffset + i + 1]);
+
+              checkBounds(memory[inheritOffset + i + 2]);
+              checkBounds(memory[inheritOffset + i + 3]);
+              checkBounds(memory[inheritOffset + i + 4]);
+              checkBounds(memory[inheritOffset + i + 5]);
+
               count++;
           }
+      }
+
+      float mutate(RNG& rng, float mutationChance, float mutationAmount) {
+
+          float mutate = rng.runifFloat(0.0f, 1.0f);
+
+          if(mutate < mutationChance)
+            mutate = 0;
+          else
+            mutate = 1;
+
+          float amt = rng.runifFloat(-mutationAmount, mutationAmount);//rng.rnormFloat(0, mutationAmount);
+          return mutate*amt;
+      }
+
+      void checkBounds(float& val) {
+        if(val < -1) val = -1;
+        if(val > 1) val = 1;
       }
 
       bool operator<(const Specimen &specimen) {
@@ -217,7 +254,9 @@ double fitness(Image& canvas, Image& target) {
     uint32_t size = canvas.width*canvas.height*canvas.channels;
 
     for(uint32_t i = 0; i < size; i++ ) {
-        score += abs(((float*)canvas.pixels)[i] - ((float*)target.pixels)[i]);
+        float a = ((float*)canvas.pixels)[i];
+        float b = ((float*)target.pixels)[i];
+        score += pow(a - b, 2);
     }
 
     return score;
